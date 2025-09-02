@@ -162,13 +162,20 @@ class MaximoAPIClient:
                 # --- Verification Step ---
                 # The API call was accepted, but let's verify the status actually changed.
                 print("--> Update command accepted by Maximo. Now verifying the change...")
-                verified_asset = self.get_asset(assetnum, siteid)
-                if verified_asset and verified_asset.get('status') == new_status:
-                    return {"status": "success", "message": f"Asset {assetnum} status successfully updated and verified as {new_status}."}
+                verified_asset_list = self.get_asset(assetnum, siteid)
+                # The get_asset function now returns a list. We need to check the first item.
+                if verified_asset_list:
+                    asset_details = verified_asset_list[0]
+                    if asset_details.get('status') == new_status:
+                        return {"status": "success", "message": f"Asset {assetnum} status successfully updated and verified as {new_status}."}
+                    else:
+                        current_status = asset_details.get('status', "unknown")
+                        print(f"❌ VERIFICATION FAILED: Maximo accepted the update, but the asset status did not change. It is still '{current_status}'.")
+                        print("    This usually means the user associated with the API key lacks permission for this specific status transition, or a business rule prevented the change.")
+                        return None
                 else:
-                    current_status = verified_asset.get('status') if verified_asset else "unknown"
-                    print(f"❌ VERIFICATION FAILED: Maximo accepted the update, but the asset status did not change. It is still '{current_status}'.")
-                    print("    This usually means the user associated with the API key lacks permission for this specific status transition, or a business rule prevented the change.")
+                    # This case would be rare, as we just found the asset to get its href.
+                    print(f"❌ VERIFICATION FAILED: Could not re-fetch asset '{assetnum}' after update attempt.")
                     return None
             else:
                 print(f"❌ Failed to update asset: {response.status_code}")
