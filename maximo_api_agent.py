@@ -124,17 +124,15 @@ class MaximoAPIClient:
             print(f"❌ CRITICAL: A network error occurred while fetching asset.\n   Error: {e}")
             return None
 
-    def update_asset_status(self, assetnum, new_status, siteid=None):
+    def update_asset(self, assetnum: str, siteid: str, fields_to_update: dict) -> dict | None:
         """
-        Updates the status of an existing asset using a POST with a PATCH override.
+        Updates one or more fields for an existing asset using a POST with a PATCH override.
         """
-        print(f"Attempting to update status for asset '{assetnum}' to '{new_status}'...")
+        print(f"Attempting to update asset '{assetnum}' at site '{siteid}' with data: {fields_to_update}...")
 
         # Step 1: Get the unique href (URL) for the specific asset record.
-        where_clause = f'assetnum="{assetnum}"'
-        if siteid:
-            where_clause += f' and siteid="{siteid}"'
-        
+        where_clause = f'assetnum="{assetnum}" and siteid="{siteid}"'
+
         asset_href = self._get_record_href("mxasset", where_clause)
         
         if not asset_href:
@@ -149,7 +147,7 @@ class MaximoAPIClient:
         patch_headers["x-method-override"] = "PATCH"
         patch_headers["patchtype"] = "MERGE" # MERGE only updates specified fields.
 
-        payload = {"status": new_status}
+        payload = fields_to_update
 
         print(f"--> Sending PATCH request to: {update_url}")
 
@@ -162,16 +160,25 @@ class MaximoAPIClient:
                 # --- Verification Step ---
                 # The API call was accepted, but let's verify the status actually changed.
                 print("--> Update command accepted by Maximo. Now verifying the change...")
-                verified_asset_list = self.get_asset(assetnum, siteid)
+                fields_to_verify = ",".join(fields_to_update.keys())
+                verified_asset_list = self.get_asset(assetnum, siteid, fields_to_select=fields_to_verify)
+
                 # The get_asset function now returns a list. We need to check the first item.
                 if verified_asset_list:
                     asset_details = verified_asset_list[0]
-                    if asset_details.get('status') == new_status:
-                        return {"status": "success", "message": f"Asset {assetnum} status successfully updated and verified as {new_status}."}
+                    mismatched_fields = []
+                    for key, value in fields_to_update.items():
+                        # Compare as strings for robustness against type differences (e.g., int vs float)
+                        if str(asset_details.get(key)) != str(value):
+                            mismatched_fields.append(f"Field '{key}' is still '{asset_details.get(key)}', not '{value}'.")
+                    
+                    if not mismatched_fields:
+                        return {"status": "success", "message": f"Asset {assetnum} successfully updated.", "updated_fields": fields_to_update}
                     else:
-                        current_status = asset_details.get('status', "unknown")
-                        print(f"❌ VERIFICATION FAILED: Maximo accepted the update, but the asset status did not change. It is still '{current_status}'.")
-                        print("    This usually means the user associated with the API key lacks permission for this specific status transition, or a business rule prevented the change.")
+                        print(f"❌ VERIFICATION FAILED: The following fields did not update correctly:")
+                        for mismatch in mismatched_fields:
+                            print(f"    - {mismatch}")
+                        print("    This usually means the user associated with the API key lacks permission for this specific change, or a business rule prevented it.")
                         return None
                 else:
                     # This case would be rare, as we just found the asset to get its href.
@@ -204,9 +211,9 @@ def main():
     Main function to provide a command-line interface for the MaximoClient.
     """
     parser = argparse.ArgumentParser(description="A command-line agent to interact with the Maximo API.")
-    parser.add_argument("action", choices=['get-asset', 'test-connection', 'update-asset-status'], help="The action to perform.")
-    parser.add_argument("--assetnum", help="Asset number for 'get-asset' or 'update-asset-status'.")
-    parser.add_argument("--status", help="The new status for the asset.")
+    parser.add_argument("action", choices=['get-asset', 'test-connection', 'update-asset'], help="The action to perform.")
+    parser.add_argument("--assetnum", help="Asset number for 'get-asset' or 'update-asset'.")
+    parser.add_argument("--fields", help="For 'update-asset', a JSON string of fields to update, e.g., '{\"description\":\"new desc\"}'.")
     parser.add_argument("--siteid", help="The site ID for the record (e.g., BEDFORD).")
 
     args = parser.parse_args()
@@ -236,15 +243,20 @@ def main():
             else:
                 print(f"❌ Failed to retrieve asset '{args.assetnum}' or it was not found. Check terminal for specific errors.")
 
-        elif args.action == 'update-asset-status':
-            if not args.assetnum or not args.status:
-                parser.error("--assetnum and --status are required for the 'update-asset-status' action.")
-            result = client.update_asset_status(args.assetnum, args.status, siteid=args.siteid)
+        elif args.action == 'update-asset':
+            if not all([args.assetnum, args.siteid, args.fields]):
+                parser.error("--assetnum, --siteid, and --fields are required for the 'update-asset' action.")
+            try:
+                fields_to_update = json.loads(args.fields)
+            except json.JSONDecodeError:
+                parser.error("--fields must be a valid JSON string.")
+
+            result = client.update_asset(args.assetnum, args.siteid, fields_to_update)
             if result:
-                print("✅ Asset status updated successfully!")
+                print("✅ Asset updated successfully!")
                 print("\n--- Update Result ---\n", json.dumps(result, indent=2))
             else:
-                print(f"❌ Failed to update asset status for '{args.assetnum}'. Check terminal for specific errors.")
+                print(f"❌ Failed to update asset '{args.assetnum}'. Check terminal for specific errors.")
 
     except ValueError as e:
         print(f"Configuration Error: {e}")
