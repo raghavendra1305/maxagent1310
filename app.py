@@ -249,6 +249,14 @@ def maximo_process_chat():
         tool_name = tool_call_result.get('tool_name')
         tool_args = tool_call_result.get('tool_args', {})
 
+        # If the tool is 'update_asset', we need to parse the JSON string from the LLM
+        if tool_name == 'update_asset':
+            try:
+                fields_str = tool_args.get('fields_to_update', '{}')
+                tool_args['fields_to_update'] = json.loads(fields_str)
+            except json.JSONDecodeError:
+                return jsonify({"status": "error", "message": "The AI failed to generate valid JSON for the fields to update."}), 400
+
         client = get_maximo_client(host=maximo_host, api_key=maximo_api_key)
         
         # Dynamically call the method on the client instance
