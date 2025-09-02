@@ -28,8 +28,8 @@ MAXIMO_TOOLS = [
         }
     },
     {
-        "name": "update_asset_status",
-        "description": "Updates the status of an existing asset in Maximo.",
+        "name": "update_asset",
+        "description": "Updates one or more fields for an existing asset in Maximo. Requires the asset number, site ID, and a JSON string of the fields to update.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -37,16 +37,16 @@ MAXIMO_TOOLS = [
                     "type": "STRING",
                     "description": "The unique identifier for the asset to be updated."
                 },
-                "new_status": {
-                    "type": "STRING",
-                    "description": "The new status to set for the asset, e.g., 'ACTIVE', 'DECOMMISSIONED'."
-                },
                 "siteid": {
                     "type": "STRING",
-                    "description": "The site identifier for the asset."
+                    "description": "The site identifier for the asset. This is required for an update."
+                },
+                "fields_to_update": {
+                    "type": "STRING",
+                    "description": "A JSON formatted string representing the fields to update. Example: '{\"description\": \"New description\", \"location\": \"NEWLOC\"}'"
                 }
             },
-            "required": ["assetnum", "new_status"]
+            "required": ["assetnum", "siteid", "fields_to_update"]
         }
     },
     {
