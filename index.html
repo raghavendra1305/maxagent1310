@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block title %}Test Case Agent - Maximo Assistant{% endblock %}
+
+{% block content %}
+<style>
+    .chat-container { display: flex; flex-direction: column; height: calc(100vh - 4rem); background-color: #fff; border-radius: 12px; box-shadow: var(--shadow); }
+    .chat-header { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+    .chat-header h1 { font-size: 1.25rem; margin: 0; }
+    .chat-log { flex-grow: 1; padding: 1.5rem; overflow-y: auto; }
+    .chat-input-area { padding: 1rem 1.5rem; border-top: 1px solid var(--border-color); background-color: #f9fafb; }
+    .chat-input-form { display: flex; align-items: center; gap: 1rem; }
+    .chat-input-form textarea { flex-grow: 1; padding: 10px 15px; border-radius: 20px; border: 1px solid var(--border-color); resize: none; font-size: 1rem; line-height: 1.5; max-height: 100px; }
+    .chat-input-form button { background: none; border: none; cursor: pointer; padding: 0.5rem; display: flex; align-items: center; justify-content: center; }
+    .chat-input-form button svg { width: 24px; height: 24px; color: var(--text-light); }
+    .chat-input-form button#send-btn svg { color: var(--primary-color); }
+    .message-bubble { max-width: 75%; margin-bottom: 1rem; display: flex; flex-direction: column; }
+    .message-bubble.user { align-self: flex-end; margin-left: auto; }
+    .message-bubble.ai { align-self: flex-start; margin-right: auto; }
+    .message-content { padding: 0.75rem 1.25rem; border-radius: 18px; }
+    .message-bubble.user .message-content { background-color: var(--primary-color); color: white; border-bottom-right-radius: 4px; }
+    .message-bubble.ai .message-content { background-color: #e9ecef; color: var(--text-color); border-bottom-left-radius: 4px; }
+    .message-bubble .test-case-display { background-color: #fff; border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 12px; margin-top: 1rem; }
+    .message-bubble .test-case-display h3 { margin-top: 0; font-size: 1.1rem; }
+    .message-bubble .test-case-display p { font-size: 0.9rem; }
+    .message-bubble .actions-bar { margin-top: 1rem; display: flex; gap: 0.5rem; }
+    .message-bubble .actions-bar button { font-size: 0.8rem; padding: 6px 12px; background-color: var(--secondary-color); }
+    #template-filename { font-size: 0.8rem; color: var(--text-light); margin-left: 1rem; }
+</style>
+
+<div class="chat-container">
+    <div class="chat-header">
+        <h1>Test Case Agent</h1>
+        <div>
+            <label for="model_name" style="font-weight: 500; color: var(--text-light); font-size: 0.9rem; margin-right: 0.5rem;">AI Model:</label>
+            <select id="model_name" name="model_name" style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color); background-color: #fff;">
+                <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash</option>
+                <option value="gemini-1.5-pro-latest">Gemini 1.5 Pro</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro (Hypothetical)</option>
+                <option value="gpt-4o">OpenAI GPT-4o</option>
+                <option value="gpt-3.5-turbo">OpenAI GPT-3.5 Turbo</option>
+            </select>
+            <div style="margin-left: 1rem;">
+                <label for="google_api_key" style="font-weight: 500; color: var(--text-light); font-size: 0.9rem; margin-right: 0.5rem;">API Key:</label>
+                <input type="password" id="google_api_key" name="google_api_key" placeholder="Enter Google or OpenAI API Key" required style="padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-color); background-color: #fff;">
+            </div>
+        </div>
+    </div>
+
+    <div class="chat-log" id="chat-log">
+        <!-- Chat messages will be dynamically inserted here -->
+        <div class="message-bubble ai">
+            <div class="message-content">
+                <p>Hello! I'm the Maximo Test Case Agent. Provide a scenario below to get started. You can also attach an Excel file as a formatting template.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="chat-input-area">
+        <div id="messages"></div>
+        <form id="generate-form" class="chat-input-form">
+            <button type="button" id="attach-btn" title="Attach Template">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 002.122 2.122l7.81-7.81" /></svg>
+            </button>
+            <input type="file" id="template_file" name="template_file" accept=".xlsx" hidden>
+            <textarea id="scenario" name="scenario" rows="1" placeholder="Enter a scenario..."></textarea>
+            <span id="template-filename"></span>
+            <button type="submit" id="send-btn" title="Send">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" /></svg>
+            </button>
+        </form>
+    </div>
+</div>
+<script>
+    // Global state to hold the current test case data
+    let currentTestCaseData = {};
+
+    const messagesDiv = document.getElementById('messages');
+    const chatLog = document.getElementById('chat-log');
+    const form = document.getElementById('generate-form');
+    const scenarioInput = document.getElementById('scenario');
+    const attachBtn = document.getElementById('attach-btn');
+    const templateFileInput = document.getElementById('template_file');
+    const templateFilenameSpan = document.getElementById('template-filename');
+
+    function showMessage(text, type = 'message') {
+        messagesDiv.innerHTML = `<div class="alert alert-${type}" role="alert">${text}</div>`;
+        setTimeout(() => messagesDiv.innerHTML = '', 5000);
+    }
+
+    function appendMessage(content, sender = 'ai') {
+        const bubble = document.createElement('div');
+        bubble.className = `message-bubble ${sender}`;
+        bubble.innerHTML = `<div class="message-content">${content}</div>`;
+        chatLog.appendChild(bubble);
+        chatLog.scrollTop = chatLog.scrollHeight;
+        return bubble;
+    }
+
+    // Auto-resize textarea
+    scenarioInput.addEventListener('input', () => {
+        scenarioInput.style.height = 'auto';
+        scenarioInput.style.height = (scenarioInput.scrollHeight) + 'px';
+    });
+
+    // Handle attachment button
+    attachBtn.addEventListener('click', () => templateFileInput.click());
+    templateFileInput.addEventListener('change', () => {
+        if (templateFileInput.files.length > 0) {
+            templateFilenameSpan.textContent = templateFileInput.files[0].name;
+        } else {
+            templateFilenameSpan.textContent = '';
+        }
+    });
+
+    // Handle form submission (for both initial generation and modification)
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const instruction = scenarioInput.value.trim();
+        if (!instruction) {
+            showMessage('Please enter a scenario or a modification request.', 'error');
+            return;
+        }
+
+        // For an initial generation, capture the form data before clearing the inputs.
+        const formData = new FormData(form);
+        // Get the selected model and explicitly add it to the form data.
+        const selectedModel = document.getElementById('model_name').value;
+        const googleApiKey = document.getElementById('google_api_key').value;
+        formData.append('google_api_key', googleApiKey);
+        formData.append('model_name', selectedModel);
+
+        appendMessage(instruction, 'user');
+        scenarioInput.value = ''; // Clear input for next message
+        scenarioInput.style.height = 'auto';
+        templateFilenameSpan.textContent = ''; // Also clear the template filename display
+        templateFileInput.value = ''; // And reset the file input
+
+        const thinkingBubble = appendMessage('<div class="spinner"></div>', 'ai');
+
+        // Decide whether this is an initial generation or a modification
+        // The backend now handles the logic of whether to generate or modify.
+        // We always call the same endpoint.
+        try {
+            const response = await fetch('/process_chat_message', { method: 'POST', body: formData });
+            const result = await response.json();
+            chatLog.removeChild(thinkingBubble);
+            
+            if (response.ok) {
+                // The backend will return the full test case object for both generate and modify
+                currentTestCaseData = result;
+                displayTestCase(result);
+            } else {
+                appendMessage(`<div class="alert alert-error">${result.error}</div>`, 'ai');
+            }
+        } catch (error) {
+            chatLog.removeChild(thinkingBubble);
+            appendMessage(`<div class="alert alert-error">A network error occurred.</div>`, 'ai');
+        }
+    });
+
+    function displayTestCase(data) {
+        let tableHtml = `
+            <div class="test-case-display">
+                <h3>${data.title || 'Test Case'}</h3>
+                <p><strong>Objective:</strong> ${data.objective || 'N/A'}</p>
+                <p><strong>Prerequisites:</strong> ${data.prerequisites || 'N/A'}</p>
+                <table>
+                    <thead><tr><th>Actions</th><th>Expected Result</th><th>Actual Result</th></tr></thead>
+                    <tbody>`;
+        
+        if (data.test_steps) {
+            data.test_steps.forEach(step => {
+                tableHtml += `<tr>
+                    <td>${step.Actions}</td>
+                    <td>${step['Expected Result']}</td>
+                    <td>${step['Actual Result']}</td>
+                </tr>`;
+            });
+        }
+
+        tableHtml += `</tbody></table>
+            <div class="actions-bar" style="display: flex; justify-content: flex-end;">
+                <button class="finalize-btn" title="Download Package" style="background: none; border: none; cursor: pointer; padding: 0.5rem;">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" style="width: 24px; height: 24px; color: var(--text-light);">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                </button>
+            </div>
+            </div>`;
+
+        const aiBubble = appendMessage(tableHtml, 'ai');
+
+        // Add event listener to the new download button
+        aiBubble.querySelector('.finalize-btn').addEventListener('click', async () => {
+            try {
+                const response = await fetch('/finalize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' } // Body is now empty
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'Maximo_TestCase_Package.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    a.parentNode.removeChild(a); // More robust way to remove the element
+                } else {
+                    const result = await response.json();
+                    showMessage(result.error, 'error');
+                }
+            } catch (error) {
+                showMessage('A network error occurred during finalization.', 'error');
+            }
+        });
+    }
+
+    // Handle session restoration
+    document.addEventListener('DOMContentLoaded', () => {
+        const sessionData = {{ current_test_case | tojson | safe if current_test_case else 'null' }};
+        if (sessionData) {
+            currentTestCaseData = sessionData;
+            appendMessage("Restored your previous session.", "ai");
+            displayTestCase(sessionData);
+        }
+    });
+
+</script>
+{% endblock %}

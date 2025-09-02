@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Maximo Test Case Assistant{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #007aff; /* Apple's classic blue for primary actions */
+            --primary-hover: #005ecb;
+            --bg-color: #f0f2f5; /* A very light grey, common in modern chat apps */
+            --sidebar-bg: #ffffff;
+            --text-color: #050505; /* Near black for high contrast text */
+            --text-light: #65676b; /* Softer grey for secondary text */
+            --border-color: #e5e7eb; /* Lighter border color */
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+        * { box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; font-size: 16px; line-height: 1.5; margin: 0; background-color: var(--bg-color); color: var(--text-color); display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 280px; background-color: var(--sidebar-bg); padding: 1.5rem; border-right: 1px solid var(--border-color); display: flex; flex-direction: column; flex-shrink: 0; }
+        .sidebar .brand { font-size: 1.5rem; font-weight: 700; color: var(--text-color); margin-bottom: 2.5rem; text-decoration: none; display: flex; align-items: center; }
+        .sidebar .brand svg { color: var(--primary-color); width: 36px; height: 36px; margin-right: 0.75rem; }
+        .sidebar .nav-link { display: flex; align-items: center; padding: 0.8rem 1rem; margin-bottom: 0.5rem; border-radius: 8px; text-decoration: none; color: var(--text-light); font-weight: 500; transition: background-color 0.2s, color 0.2s; }
+        .sidebar .nav-link:hover, .sidebar .nav-link.active { background-color: #eef2f9; color: var(--primary-color); }
+        .sidebar .nav-link svg { margin-right: 1rem; width: 20px; height: 20px; }
+        .main-content { flex-grow: 1; display: flex; flex-direction: column; height: 100vh; }
+        .container { width: 100%; height: 100%; margin: 0 auto; display: flex; flex-direction: column; }
+        h1, h2 { color: var(--text-color); }
+        h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem; }
+        h2 { font-size: 1.25rem; font-weight: 600; }
+        p { color: var(--text-light); font-size: 1rem; }
+        textarea, input[type="text"], input[type="file"]::file-selector-button { font-family: 'Inter', sans-serif; }
+        button { background-color: var(--primary-color); color: white; padding: 10px 18px; border: none; border-radius: 8px; cursor: pointer; font-size: 1rem; font-weight: 600; transition: background-color 0.2s, box-shadow 0.2s; }
+        button:hover { background-color: var(--primary-hover); }
+        button:disabled { background-color: #adb5bd; cursor: not-allowed; }
+        .section { background-color: #fff; padding: 2rem; border-radius: 12px; box-shadow: var(--shadow); margin-top: 1.5rem; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
+        th, td { border: 1px solid var(--border-color); padding: 12px 15px; text-align: left; font-size: 0.9rem; }
+        th { background-color: #f8f9fa; font-weight: 600; }
+        .spinner { border: 3px solid rgba(0, 122, 255, 0.2); border-top: 3px solid var(--primary-color); border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .alert { padding: 1rem; margin-bottom: 1rem; border: 1px solid transparent; border-radius: 8px; }
+        .alert-error { color: #b91c1c; background-color: #fee2e2; border-color: #fca5a5; }
+        .alert-message { color: #155724; background-color: #d1e7dd; border-color: #c3e6cb; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div>
+            <a href="/" class="brand">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>
+                <span>Maximo Agent</span>
+            </a>
+            <nav>
+                <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m2.25 12 8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" /></svg>
+                    Home
+                </a>
+                <a href="/kb" class="nav-link {% if request.path == '/kb' %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
+                    Knowledge Base
+                </a>
+                <a href="/agent" class="nav-link {% if request.path == '/agent' %}active{% endif %}">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904 9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715 18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456Z" /></svg>
+                    Test Case Agent
+                </a>
+            </nav>
+        </div>
+    </div>
+    <div class="main-content">
+        <div class="container">
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+</body>
+</html>

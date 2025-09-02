@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Knowledge Base - Maximo Assistant{% endblock %}
+
+{% block content %}
+<style>
+    .drop-zone {
+        border: 2px dashed var(--border-color);
+        border-radius: 8px;
+        padding: 3rem;
+        text-align: center;
+        cursor: pointer;
+        transition: background-color 0.2s, border-color 0.2s;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+        background-color: #e9ecef;
+        border-color: var(--primary-color);
+    }
+    .drop-zone-text { color: #6c757d; font-weight: 500; }
+    #kb_file { display: none; }
+</style>
+
+<h1>Knowledge Base Management</h1>
+<p>Upload a .pdf, .docx, or .txt file to add it to the knowledge base. The AI's knowledge index will be updated automatically.</p>
+
+<div id="messages"></div>
+
+<div class="section">
+    <form id="kb-form">
+        <label for="kb_file" class="drop-zone">
+            <span class="drop-zone-text">Drag & drop a file here, or click to select</span>
+            <input type="file" id="kb_file" name="kb_file" accept=".pdf,.docx,.txt">
+        </label>
+        <div style="text-align: right; margin-top: 1rem;">
+            <button type="submit">Upload & Update Index</button>
+        </div>
+    </form>
+</div>
+
+<div id="spinner" class="spinner"></div>
+
+<script>
+    const spinner = document.getElementById('spinner');
+    const messagesDiv = document.getElementById('messages');
+    const dropZone = document.querySelector('.drop-zone');
+    const dropZoneText = document.querySelector('.drop-zone-text');
+    const fileInput = document.getElementById('kb_file');
+
+    function showMessage(text, type = 'message') {
+        messagesDiv.innerHTML = `<div class="alert alert-${type}" role="alert">${text}</div>`;
+        setTimeout(() => messagesDiv.innerHTML = '', 5000);
+    }
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
+    });
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'));
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
+    });
+    dropZone.addEventListener('drop', (e) => {
+        fileInput.files = e.dataTransfer.files;
+        updateDropZoneText();
+    });
+    fileInput.addEventListener('change', updateDropZoneText);
+
+    function updateDropZoneText() {
+        if (fileInput.files.length > 0) {
+            dropZoneText.textContent = fileInput.files[0].name;
+        } else {
+            dropZoneText.textContent = "Drag & drop a file here, or click to select";
+        }
+    }
+
+    document.getElementById('kb-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        if (!formData.get('kb_file').name) {
+            showMessage('Please select a file to upload.', 'error');
+            return;
+        }
+        spinner.style.display = 'block';
+        try {
+            const response = await fetch('/update_kb', { method: 'POST', body: formData });
+            const result = await response.json();
+            if (response.ok) {
+                showMessage(result.message);
+            } else {
+                showMessage(result.error, 'error');
+            }
+        } catch (error) {
+            showMessage('A network error occurred.', 'error');
+        } finally {
+            spinner.style.display = 'none';
+            e.target.reset();
+            updateDropZoneText();
+        }
+    });
+</script>
+{% endblock %}

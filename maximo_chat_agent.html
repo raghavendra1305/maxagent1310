@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maximo Conversational Agent</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .chat-container {
+            display: flex;
+            height: calc(100vh - 40px);
+            margin: 20px;
+        }
+        .output-panel {
+            flex: 2;
+            padding: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+        }
+        .input-panel {
+            flex: 1;
+            padding: 20px;
+            margin-left: 20px;
+            background-color: #fff;
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
+            display: flex;
+            flex-direction: column;
+        }
+        #chat-form {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        #prompt-input {
+            flex-grow: 1;
+            resize: none;
+        }
+        .spinner-border {
+            width: 1.5rem;
+            height: 1.5rem;
+            vertical-align: text-bottom;
+        }
+        pre {
+            background-color: #e9ecef;
+            padding: 1rem;
+            border-radius: 0.3rem;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="output-panel" id="output-panel">
+            <h3>Maximo API Response</h3>
+            <hr>
+            <pre id="results-container">Awaiting your command...</pre>
+        </div>
+        <div class="input-panel">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h4>Conversational Agent</h4>
+                <a href="/" class="btn btn-sm btn-outline-secondary">Back to Home</a>
+            </div>
+            <div class="border rounded p-3 mb-3">
+                <h6 class="mb-3">Connection Settings</h6>
+                <div class="mb-2">
+                    <label for="maximo_host" class="form-label small">Maximo Host URL</label>
+                    <input type="text" class="form-control form-control-sm" id="maximo_host" placeholder="e.g., https://10.0.0.1" required>
+                </div>
+                <div class="mb-2">
+                    <label for="maximo_api_key" class="form-label small">Maximo API Key</label>
+                    <input type="password" class="form-control form-control-sm" id="maximo_api_key" required>
+                </div>
+                <div class="mb-2">
+                    <label for="google_api_key" class="form-label small">Google API Key</label>
+                    <input type="password" class="form-control form-control-sm" id="google_api_key" required>
+                </div>
+            </div>
+            <p class="text-muted small">
+                Type your request below. For example:
+                <ul>
+                    <li>"test the connection to maximo"</li>
+                    <li>"get asset 11430 from the BEDFORD site"</li>
+                    <li>"update the status of asset PUMP-123 to DECOMMISSIONED"</li>
+                </ul>
+            </p>
+            <form id="chat-form">
+                <div class="mb-3 flex-grow-1">
+                    <textarea class="form-control h-100" id="prompt-input" placeholder="Enter your request here..." required></textarea>
+                </div>
+                <button type="submit" id="submit-btn" class="btn btn-primary w-100">Send Command</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const chatForm = document.getElementById('chat-form');
+        const submitBtn = document.getElementById('submit-btn');
+        const promptInput = document.getElementById('prompt-input');
+        const resultsContainer = document.getElementById('results-container');
+
+        function showLoading() {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...`;
+        }
+
+        function hideLoading() {
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = 'Send Command';
+        }
+
+        function displayResult(data) {
+            resultsContainer.textContent = JSON.stringify(data, null, 2);
+        }
+
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+
+            showLoading();
+            resultsContainer.textContent = 'Sending request to agent...';
+
+            const response = await fetch('/maximo/process_chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: prompt,
+                    maximo_host: document.getElementById('maximo_host').value,
+                    maximo_api_key: document.getElementById('maximo_api_key').value,
+                    google_api_key: document.getElementById('google_api_key').value
+                })
+            });
+            const data = await response.json();
+            displayResult(data);
+            hideLoading();
+        });
+    </script>
+</body>
+</html>
