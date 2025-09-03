@@ -36,6 +36,7 @@ class MaximoAPIClient:
             "apikey": self.api_key
         }
 
+
     def test_connection(self):
         """Test connection using mxperson"""
         url = f"{self.host}/maximo/api/os/mxperson"
@@ -124,68 +125,86 @@ class MaximoAPIClient:
             print(f"❌ CRITICAL: A network error occurred while fetching asset.\n   Error: {e}")
             return None
 
+    def get_work_orders(self, where_clause: str, fields_to_select: str = "wonum,description,status,worktype") -> list | None:
+        """
+        Retrieves a list of work orders based on a given where clause.
+        """
+        url = f"{self.host}/maximo/api/os/mxwo" # Using the mxwo object structure
+
+        params = {
+            "oslc.where": where_clause,
+            "oslc.select": fields_to_select,
+            "lean": 1,
+            "_format": "json"
+        }
+
+        print("--> Fetching work orders with URL:", f"{url}?{urlencode(params)}")
+
+        try:
+            response = requests.get(url, params=params, headers=self.headers, verify=False, timeout=30)
+
+            if response.ok:
+                data = response.json()
+                if "member" in data and data.get("member"):
+                    # The data is already a list of dictionaries, so we can return it directly.
+                    return data["member"]
+                else:
+                    # No work orders found
+                    return []
+            else:
+                print(f"❌ API Error while fetching work orders: {response.status_code} - {response.text}")
+                return None
+        except requests.exceptions.RequestException as e:
+            print(f"❌ CRITICAL: A network error occurred while fetching work orders.\n   Error: {e}")
+            return None
+
     def update_asset(self, assetnum: str, siteid: str, fields_to_update: dict) -> dict | None:
         """
-        Updates one or more fields for an existing asset using a POST request with an HTTPMETHOD header.
+        Updates one or more fields for an existing asset using a POST with a SYNC override.
+        This is a robust alternative update method that posts to the collection URI.
         """
         print(f"Attempting to update asset '{assetnum}' at site '{siteid}' with data: {fields_to_update}...")
 
-        # Step 1: Get the unique href (URL) for the specific asset record.
-        where_clause = f'assetnum="{assetnum}" and siteid="{siteid}"'
+        # For a SYNC operation, we post to the collection URI.
+        update_url = f"{self.host}/maximo/api/os/mxasset"
 
-        asset_href = self._get_record_href("mxasset", where_clause)
-        
-        if not asset_href:
-            print(f"❌ Could not find asset '{assetnum}' at site '{siteid}' to update.")
-            return None
+        # Prepare headers for a SYNC operation.
+        sync_headers = self.headers.copy()
+        sync_headers["x-method-override"] = "SYNC"
+        sync_headers["properties"] = "*" # Instructs Maximo to return the updated record in the response body.
 
-        # Step 2: Prepare and send the PATCH request to the asset's unique URL.
-        update_url = asset_href
-        
-        # The normal headers already have Accept and apikey. We add the override header.
-        update_headers = self.headers.copy()
-        update_headers["HTTPMETHOD"] = "POST"
+        # The payload must contain the key fields (assetnum, siteid) plus the fields to change.
+        payload = fields_to_update.copy()
+        payload['assetnum'] = assetnum
+        payload['siteid'] = siteid
 
-        payload = fields_to_update
-
-        print(f"--> Sending POST request (with HTTPMETHOD header) to: {update_url}")
+        print(f"--> Sending SYNC request to: {update_url}")
 
         try:
-            response = requests.post(update_url, headers=update_headers, json=payload, verify=False, timeout=15)
+            response = requests.post(update_url, headers=sync_headers, json=payload, verify=False, timeout=15)
 
-            # A 204 No Content status code means the API call was accepted.
-            # It does NOT guarantee the business logic was successful.
-            if response.status_code == 204:
-                # --- Verification Step ---
-                # The API call was accepted, but let's verify the status actually changed.
-                print("--> Update command accepted by Maximo. Now verifying the change...")
-                fields_to_verify = ",".join(fields_to_update.keys())
-                verified_asset_list = self.get_asset(assetnum, siteid, fields_to_select=fields_to_verify)
-
-                # The get_asset function now returns a list. We need to check the first item.
-                if verified_asset_list:
-                    asset_details = verified_asset_list[0]
-                    mismatched_fields = []
-                    for key, value in fields_to_update.items():
-                        # Compare as strings for robustness against type differences (e.g., int vs float)
-                        if str(asset_details.get(key)) != str(value):
-                            mismatched_fields.append(f"Field '{key}' is still '{asset_details.get(key)}', not '{value}'.")
-                    
-                    if not mismatched_fields:
-                        return {"status": "success", "message": f"Asset {assetnum} successfully updated.", "updated_fields": fields_to_update}
-                    else:
-                        print(f"❌ VERIFICATION FAILED: The following fields did not update correctly:")
-                        for mismatch in mismatched_fields:
-                            print(f"    - {mismatch}")
-                        # Add a specific hint if the status was one of the failed fields.
-                        if 'status' in fields_to_update:
-                            print("\n    HINT: Status updates often fail due to Maximo's internal business rules (e.g., an invalid status transition).")
-                            print("    Please check the 'ASSETSTATUS' domain in Maximo to ensure this is a valid change from the asset's current status.")
-                        print("\n    This can also mean the user associated with the API key lacks permission for this specific change.")
-                        return None
+            # A successful SYNC returns 200 OK with the updated record in the body.
+            if response.ok:
+                print("--> SYNC command accepted and processed by Maximo.")
+                updated_record = response.json()
+                
+                # Verification step
+                mismatched_fields = []
+                for key, value in fields_to_update.items():
+                    if str(updated_record.get(key)) != str(value):
+                        mismatched_fields.append(f"Field '{key}' is still '{updated_record.get(key)}', not '{value}'.")
+                
+                if not mismatched_fields:
+                    return {"status": "success", "message": f"Asset {assetnum} successfully updated.", "updated_fields": fields_to_update}
                 else:
-                    # This case would be rare, as we just found the asset to get its href.
-                    print(f"❌ VERIFICATION FAILED: Could not re-fetch asset '{assetnum}' after update attempt.")
+                    # This case indicates a silent failure by a business rule.
+                    print(f"❌ VERIFICATION FAILED: The following fields did not update correctly:")
+                    for mismatch in mismatched_fields:
+                        print(f"    - {mismatch}")
+                    if 'status' in fields_to_update:
+                        print("\n    HINT: Status updates often fail due to Maximo's internal business rules (e.g., an invalid status transition).")
+                        print("    Please check the 'ASSETSTATUS' domain in Maximo to ensure this is a valid change from the asset's current status.")
+                    print("\n    This can also mean the user associated with the API key lacks permission for this specific change.")
                     return None
             else:
                 print(f"❌ Failed to update asset: {response.status_code}")
@@ -194,20 +213,6 @@ class MaximoAPIClient:
         except requests.exceptions.RequestException as e:
             print(f"❌ CRITICAL: A network error occurred while updating asset.\n   Error: {e}")
             return None
-
-    def _get_record_href(self, object_structure, where_clause):
-        """Helper function to get a record's unique URL (href) for updates."""
-        url = f"{self.host}/maximo/api/os/{object_structure}"
-        params = {"oslc.where": where_clause, "oslc.select": "href", "lean": 1, "_format": "json"}
-        try:
-            response = requests.get(url, params=params, headers=self.headers, verify=False, timeout=10)
-            if response.ok:
-                data = response.json()
-                if data.get('member') and data['member']:
-                    return data['member'][0].get('href')
-        except requests.exceptions.RequestException:
-            return None # The calling function will handle the error message.
-        return None
 
 def main():
     """
