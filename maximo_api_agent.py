@@ -4,6 +4,8 @@ import json
 import argparse
 import urllib3
 from urllib.parse import urlencode
+import base64
+import logging
 
 # Suppress only the single InsecureRequestWarning from urllib3 needed for self-signed certificates.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -11,31 +13,41 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- Configuration ---
 # For development, you can hardcode them here.
 # For command-line execution, it is recommended to use environment variables.
-# Example: set MAXIMO_HOST=https://your.maximo.com
-MAXIMO_HOST = os.environ.get("MAXIMO_HOST", "YOUR_MAXIMO_HOST_HERE")
-API_KEY = os.environ.get("MAXIMO_API_KEY", "YOUR_MAXIMO_API_KEY_HERE")
+MAXIMO_HOST = os.environ.get("MAXIMO_HOST")
+API_KEY = os.environ.get("MAXIMO_API_KEY")
+MAXIMO_USER = os.environ.get("MAXIMO_USER")
+MAXIMO_PASSWORD = os.environ.get("MAXIMO_PASSWORD")
 
 class MaximoAPIClient:
     """
     A client for interacting with the IBM Maximo JSON API.
-    This version uses URL parameters for authentication for simplicity and compatibility.
+    This version supports both API Key and Basic (maxauth) authentication.
     """
-    def __init__(self, host, api_key):
-        if not host or "your.maximo.com" in host:
-            raise ValueError(f"MAXIMO_HOST is not configured correctly. The value received was '{host}'. Please set it as an environment variable or hardcode it in the script.")
-        if not api_key or "your_long_api_key" in api_key or "apikey" == api_key:
-             raise ValueError(f"API_KEY is not configured correctly. The value received was empty or is still a placeholder. Please set it as an environment variable or hardcode it in the script.")
+    def __init__(self, host, api_key=None, user=None, password=None):
+        if not host:
+            raise ValueError("Maximo Host must be provided.")
+        
+        if api_key:
+            self.auth_header = {"apikey": api_key}
+        elif user and password:
+            credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
+            self.auth_header = {"maxauth": credentials}
+        else:
+            raise ValueError("Either API key or username/password must be provided.")
         
         self.host = host
-        self.api_key = api_key
-        # Some Maximo servers require an explicit "Accept" header to avoid a 406 error.
-        # We define it here to be used in all requests.
-        # The API key is also placed here for secure header-based authentication.
-        self.headers = {
+        
+        # Common headers for all GET requests
+        self.get_headers = {
+            **self.auth_header,
             "Accept": "application/json",
-            "apikey": self.api_key
         }
-
+        # Common headers for all POST/PATCH update requests
+        self.update_headers = {
+            **self.auth_header,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
 
     def test_connection(self):
         """Test connection using mxperson"""
@@ -52,7 +64,7 @@ class MaximoAPIClient:
         print(f"--> Performing test query against: {url}?{urlencode(params)}")
         
         try:
-            response = requests.get(url, params=params, headers=self.headers, verify=False, timeout=10)
+            response = requests.get(url, params=params, headers=self.get_headers, verify=False, timeout=10)
             if response.ok:
                 return response.json()
             else:
@@ -66,7 +78,7 @@ class MaximoAPIClient:
         """
         Retrieves details for one or more assets.
         """
-        url = f"{self.host}/maximo/api/os/mxasset"
+        resource_url = f"{self.host}/maximo/oslc/os/mxasset"
 
         # Handle single or multiple asset numbers by building the correct WHERE clause.
         if "," in assetnum:
@@ -74,7 +86,7 @@ class MaximoAPIClient:
             asset_list = [f'"{a.strip()}"' for a in assetnum.split(',')]
             where_clause = f'assetnum in [{",".join(asset_list)}]'
         else:
-            where_clause = f'assetnum="{assetnum.strip()}"'
+            where_clause = f'spi:assetnum="{assetnum.strip()}"'
 
         if siteid:
             where_clause += f' and siteid="{siteid}"'
@@ -91,28 +103,30 @@ class MaximoAPIClient:
 
         params = {
             "oslc.where": where_clause,
-            "oslc.select": select_fields, # Use the dynamic or default fields
-            "lean": 1,
-            # "oslc.pageSize": 1, # Removed to allow multiple records to be returned
-            "_format": "json"
+            "oslc.select": select_fields
         }
 
-        print("--> Final URL being requested (with encoded params):", f"{url}?{urlencode(params)}")
+        print("--> Final URL being requested (with encoded params):", f"{resource_url}?{urlencode(params)}")
 
         try:
-            response = requests.get(url, params=params, headers=self.headers, verify=False, timeout=15)
+            response = requests.get(resource_url, params=params, headers=self.get_headers, verify=False, timeout=15)
 
             if response.ok:
                 data = response.json()
-                if "member" in data and data.get("member"):
-                    assets = data["member"]
+                
+                # Handle different response formats for members
+                members = data.get("member", data.get("rdfs:member"))
+
+                if members:
+                    assets = members
                     
                     requested_fields = select_fields.split(',')
                     
                     # Process all returned assets into a list of clean dictionaries
                     clean_assets = []
                     for asset in assets:
-                        clean_asset = {field: asset.get(field) for field in requested_fields if field in asset}
+                        # OSLC API often prefixes fields with spi:
+                        clean_asset = {field: asset.get(f"spi:{field}", asset.get(field)) for field in requested_fields.split(',')}
                         clean_assets.append(clean_asset)
                     return clean_assets
                 else:
@@ -160,63 +174,61 @@ class MaximoAPIClient:
 
     def update_asset(self, assetnum: str, siteid: str, fields_to_update: dict) -> dict | None:
         """
-        Updates one or more fields for an existing asset using a POST with a SYNC override.
-        This is a robust alternative update method that posts to the collection URI.
+        Updates an asset using Maximo OSLC API with direct resource targeting.
         """
         print(f"Attempting to update asset '{assetnum}' at site '{siteid}' with data: {fields_to_update}...")
 
-        # For a SYNC operation, we post to the collection URI.
-        update_url = f"{self.host}/maximo/api/os/mxasset"
-
-        # Prepare headers for a SYNC operation.
-        sync_headers = self.headers.copy()
-        sync_headers["x-method-override"] = "SYNC"
-        sync_headers["properties"] = "*" # Instructs Maximo to return the updated record in the response body.
-
-        # The payload must contain the key fields (assetnum, siteid) plus the fields to change.
-        payload = fields_to_update.copy()
-        payload['assetnum'] = assetnum
-        payload['siteid'] = siteid
-
-        print(f"--> Sending SYNC request to: {update_url}")
-
         try:
-            response = requests.post(update_url, headers=sync_headers, json=payload, verify=False, timeout=15)
+            # Step 1: Get the specific asset to find its URI
+            print("--> Step 1: Looking up the asset to get its URI...")
+            asset_list = self.get_asset(assetnum, siteid)
+            if not asset_list:
+                raise Exception(f"Asset {assetnum} at site {siteid} not found.")
+            
+            asset_data = asset_list[0]
+            asset_uri = asset_data.get("href", asset_data.get("rdf:about"))
 
-            # A successful SYNC returns 200 OK with the updated record in the body.
-            if response.ok:
-                print("--> SYNC command accepted and processed by Maximo.")
-                updated_record = response.json()
-                
-                # Verification step
-                mismatched_fields = []
-                for key, value in fields_to_update.items():
-                    if str(updated_record.get(key)) != str(value):
-                        mismatched_fields.append(f"Field '{key}' is still '{updated_record.get(key)}', not '{value}'.")
-                
-                if not mismatched_fields:
-                    return {"status": "success", "message": f"Asset {assetnum} successfully updated.", "updated_fields": fields_to_update}
-                else:
-                    # This case indicates a silent failure by a business rule.
-                    print(f"❌ VERIFICATION FAILED: The following fields did not update correctly:")
-                    for mismatch in mismatched_fields:
-                        print(f"    - {mismatch}")
-                    if 'status' in fields_to_update:
-                        print("\n    HINT: Status updates often fail due to Maximo's internal business rules (e.g., an invalid status transition).")
-                        print("    Please check the 'ASSETSTATUS' domain in Maximo to ensure this is a valid change from the asset's current status.")
-                    print("\n    This can also mean the user associated with the API key lacks permission for this specific change.")
-                    return None
+            if not asset_uri:
+                raise Exception("Could not find asset URI ('href') in the response.")
+            
+            print(f"--> Found asset URI: {asset_uri}")
+
+            # Step 2: Prepare the update payload with OSLC namespace prefixes
+            payload = {}
+            for key, value in fields_to_update.items():
+                payload[f"spi:{key}"] = value
+
+            # Step 3: Prepare headers for the PATCH request
+            headers = self.update_headers.copy()
+            headers["x-method-override"] = "PATCH"
+            # The 'Properties' header tells Maximo which fields are being updated.
+            headers["Properties"] = ",".join(fields_to_update.keys())
+
+            print(f"--> Step 2: Sending PATCH request to update asset...")
+            response = requests.post(
+                asset_uri,
+                headers=headers,
+                json=payload,
+                verify=False,
+                timeout=15
+            )
+
+            if response.status_code in [200, 201, 204]:
+                success_msg = f"Successfully updated asset {assetnum} at site {siteid}"
+                print(f"--> {success_msg}")
+                return {"status": "success", "message": success_msg, "updated_fields": fields_to_update}
             else:
-                print(f"❌ Failed to update asset: {response.status_code}")
-                print(response.text)
-                return None
+                error_msg = f"Failed to update asset. Status: {response.status_code}, Body: {response.text}"
+                print(f"❌ {error_msg}")
+                raise Exception(error_msg)
+
         except requests.exceptions.RequestException as e:
             print(f"❌ CRITICAL: A network error occurred while updating asset.\n   Error: {e}")
             return None
 
 def main():
     """
-    Main function to provide a command-line interface for the MaximoClient.
+    Main function to provide a command-line interface for the MaximoAPIClient.
     """
     parser = argparse.ArgumentParser(description="A command-line agent to interact with the Maximo API.")
     parser.add_argument("action", choices=['get-asset', 'test-connection', 'update-asset'], help="The action to perform.")
@@ -227,7 +239,13 @@ def main():
     args = parser.parse_args()
 
     try:
-        client = MaximoAPIClient(host=MAXIMO_HOST, api_key=API_KEY)
+        # Initialize client with API Key first, with fallback to User/Pass
+        if API_KEY and API_KEY != "YOUR_MAXIMO_API_KEY_HERE":
+            client = MaximoAPIClient(host=MAXIMO_HOST, api_key=API_KEY)
+        elif MAXIMO_USER and MAXIMO_PASSWORD:
+            client = MaximoAPIClient(host=MAXIMO_HOST, user=MAXIMO_USER, password=MAXIMO_PASSWORD)
+        else:
+            raise ValueError("No valid Maximo credentials found in environment variables (MAXIMO_API_KEY or MAXIMO_USER/MAXIMO_PASSWORD).")
 
         # If the action is just to test the connection, do that and exit.
         if args.action == 'test-connection':
