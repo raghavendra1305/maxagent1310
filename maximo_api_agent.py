@@ -126,7 +126,7 @@ class MaximoAPIClient:
 
     def update_asset(self, assetnum: str, siteid: str, fields_to_update: dict) -> dict | None:
         """
-        Updates one or more fields for an existing asset using a POST with a PATCH override.
+        Updates one or more fields for an existing asset using a POST request with an HTTPMETHOD header.
         """
         print(f"Attempting to update asset '{assetnum}' at site '{siteid}' with data: {fields_to_update}...")
 
@@ -143,16 +143,15 @@ class MaximoAPIClient:
         update_url = asset_href
         
         # The normal headers already have Accept and apikey. We add the override header.
-        patch_headers = self.headers.copy()
-        patch_headers["x-method-override"] = "PATCH"
-        patch_headers["patchtype"] = "MERGE" # MERGE only updates specified fields.
+        update_headers = self.headers.copy()
+        update_headers["HTTPMETHOD"] = "POST"
 
         payload = fields_to_update
 
-        print(f"--> Sending PATCH request to: {update_url}")
+        print(f"--> Sending POST request (with HTTPMETHOD header) to: {update_url}")
 
         try:
-            response = requests.post(update_url, headers=patch_headers, json=payload, verify=False, timeout=15)
+            response = requests.post(update_url, headers=update_headers, json=payload, verify=False, timeout=15)
 
             # A 204 No Content status code means the API call was accepted.
             # It does NOT guarantee the business logic was successful.
