@@ -178,7 +178,11 @@ class MaximoAPIClient:
                         print(f"❌ VERIFICATION FAILED: The following fields did not update correctly:")
                         for mismatch in mismatched_fields:
                             print(f"    - {mismatch}")
-                        print("    This usually means the user associated with the API key lacks permission for this specific change, or a business rule prevented it.")
+                        # Add a specific hint if the status was one of the failed fields.
+                        if 'status' in fields_to_update:
+                            print("\n    HINT: Status updates often fail due to Maximo's internal business rules (e.g., an invalid status transition).")
+                            print("    Please check the 'ASSETSTATUS' domain in Maximo to ensure this is a valid change from the asset's current status.")
+                        print("\n    This can also mean the user associated with the API key lacks permission for this specific change.")
                         return None
                 else:
                     # This case would be rare, as we just found the asset to get its href.
