@@ -2,10 +2,12 @@ import os
 import json
 import io
 import zipfile
+import shutil
 from flask import Flask, render_template, request, jsonify, send_file, flash, session, redirect, url_for
 import requests # For handling exceptions from the requests library
 from maximo_api_agent import MaximoAPIClient
 from werkzeug.utils import secure_filename
+import chromadb
 import google.generativeai as genai
 
 import maximo_natural_language_agent as maximo_nl_agent
@@ -192,6 +194,10 @@ def update_kb():
         if 'kb_file' not in request.files or request.files['kb_file'].filename == '':
             flash('No file selected for knowledge base update.')
             return jsonify({'error': 'No file selected.'}), 400
+        
+        google_api_key = request.form.get('google_api_key')
+        if not google_api_key:
+            return jsonify({'error': 'Google API Key is required to update the knowledge base.'}), 400
 
         kb_file = request.files['kb_file']
         filename = secure_filename(kb_file.filename)
@@ -202,13 +208,43 @@ def update_kb():
         # Immediately trigger the index update
         # This can take time, so for a real production app, you'd use a background task queue.
         # For this script, we'll run it directly and the user will wait.
-        generator.update_vector_index(learning_dir, index_dir, os.environ.get("GOOGLE_API_KEY")) # Admin function still uses env var
+        generator.update_vector_index(learning_dir, index_dir, google_api_key)
 
         return jsonify({'message': f"Knowledge base successfully updated with '{filename}'. The index has been rebuilt."})
 
     except Exception as e:
         return jsonify({'error': f'An error occurred while updating the knowledge base: {str(e)}'}), 500
 
+@app.route('/clear_kb', methods=['POST'])
+def clear_kb():
+    """
+    Deletes the 'maximo_docs' collection from ChromaDB AND clears the source
+    document folder to fully reset the knowledge base.
+    """
+    try:
+        # Step 1: Delete the ChromaDB collection if it exists
+        if os.path.exists(index_dir) and os.listdir(index_dir):
+            print(f"--> Connecting to ChromaDB at: {index_dir} to clear collection.")
+            client = chromadb.PersistentClient(path=index_dir)
+            
+            collections = client.list_collections()
+            if any(c.name == "maximo_docs" for c in collections):
+                client.delete_collection(name="maximo_docs")
+                print("--> 'maximo_docs' collection deleted successfully.")
+        
+        # Step 2: Delete all files in the source 'Learning_Maximo' directory
+        print(f"--> Clearing source documents from: {learning_dir}")
+        for filename in os.listdir(learning_dir):
+            file_path = os.path.join(learning_dir, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"  - Deleted source file: {filename}")
+        
+        return jsonify({'message': 'Knowledge base and all source documents have been successfully cleared.'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'An error occurred while clearing the knowledge base: {str(e)}'}), 500
 
 # --- Maximo Agent Routes ---
 
@@ -282,4 +318,4 @@ def maximo_process_chat():
 if __name__ == '__main__':
     print("Flask server starting...")
     print(f"Open your browser and go to http://127.0.0.1:5000")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, use_reloader=False, host='0.0.0.0', port=5000)
