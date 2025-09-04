@@ -4,6 +4,7 @@ import argparse
 import google.generativeai as genai
 import json
 import numpy as np
+import chromadb
 from openai import OpenAI
 
 
@@ -24,12 +25,15 @@ def build_user_prompt(scenario: str, custom_context: str, example_section: str) 
     context_section = ""
     if custom_context:
         context_section = f"""
-**Additional Custom Context Provided by User:**
-The following information is from a user-provided document. Use it as a primary reference to understand specific processes, naming conventions, or data mentioned in the scenario.
+**CRITICAL CONTEXT: Read and follow this information carefully.**
+The following information is from user-provided documentation. You MUST use this as the primary source of truth.
+- **Prioritize this context over your general knowledge.**
+- **Use the exact field names, values, and terminology found in this context (e.g., if the context says "cal checkbox", you MUST use "cal checkbox", not "Calendar checkbox").**
 ---
 {custom_context}
 ---
 """
+
     return f"""
 First, review any additional custom context provided below, then proceed with the instructions.
 {context_section}
@@ -338,50 +342,68 @@ def update_vector_index(source_dir: str, index_dir: str, api_key: str):
     Implements the 'Update' step of RAG. It reads documents, chunks them,
     creates vector embeddings, and saves them to an index for fast retrieval.
     """
-    print(f"Reading documents from: {source_dir}")
-    all_chunks = []
+    # Initialize a persistent ChromaDB client
+    client = chromadb.PersistentClient(path=index_dir)
+    
+    # Get or create a collection. This is like a table in a traditional database.
+    # The name can be anything you choose.
+    collection = client.get_or_create_collection(
+        name="maximo_docs",
+        metadata={"hnsw:space": "cosine"} # Use cosine distance for similarity search
+    )
+
+    # Get a list of already processed documents from the database's metadata
+    print("--> Checking for already processed documents in the index...")
+    existing_docs = collection.get(include=["metadatas"])
+    processed_sources = set(meta['source'] for meta in existing_docs['metadatas'] if meta and 'source' in meta)
+    print(f"Found {len(processed_sources)} unique source documents already in the vector index.")
+
+    new_chunks = []
+    new_metadatas = []
+    new_ids = []
+    
+    print(f"Scanning for new or updated documents in: {source_dir}")
     for filename in sorted(os.listdir(source_dir)):
+        if filename in processed_sources:
+            continue # Skip files that have already been processed
+
         filepath = os.path.join(source_dir, filename)
-        if not os.path.isfile(filepath):
-            continue
+        if os.path.isfile(filepath):
+            content = ""
+            if filename.lower().endswith('.pdf'):
+                content = _read_pdf_content(filepath)
+            elif filename.lower().endswith('.docx') and not filename.startswith('~'):
+                content = _read_docx_content(filepath)
+            elif filename.lower().endswith('.txt'):
+                content = _read_txt_content(filepath)
 
-        content = ""
-        if filename.lower().endswith('.pdf'):
-            content = _read_pdf_content(filepath)
-        elif filename.lower().endswith('.docx'):
-            content = _read_docx_content(filepath)
-        elif filename.lower().endswith('.txt'):
-            content = _read_txt_content(filepath)
+            if content:
+                print(f"  - Found new document. Chunking and processing '{filename}'...")
+                chunks = _chunk_text(content)
+                # For each chunk, we create a unique ID and store the source filename as metadata
+                for i, chunk_text in enumerate(chunks):
+                    chunk_id = f"{filename}_{i}"
+                    new_chunks.append(chunk_text)
+                    new_metadatas.append({"source": filename})
+                    new_ids.append(chunk_id)
 
-        if content:
-            print(f"  - Chunking and processing '{filename}'...")
-            chunks = _chunk_text(content)
-            # Store where each chunk came from for context
-            for chunk in chunks:
-                all_chunks.append({"source": filename, "text": chunk})
-
-    if not all_chunks:
-        print("Warning: No text could be extracted from documents. Index not updated.")
+    if not new_chunks:
+        print("No new documents to process. Index is up to date.")
         return
 
-    print(f"Generated {len(all_chunks)} text chunks. Now creating embeddings...")
+    print(f"Generated {len(new_chunks)} new text chunks. Now creating embeddings...")
     
-    # Create embeddings for all chunks
     try:
         genai.configure(api_key=api_key)
-        chunk_texts = [chunk['text'] for chunk in all_chunks]
-        # The 'models/embedding-001' is a powerful model for this task.
-        result = genai.embed_content(model='models/embedding-001',
-                                     content=chunk_texts,
-                                     task_type="RETRIEVAL_DOCUMENT")
-        embeddings = np.array(result['embedding'])
-        print(f"Successfully created {embeddings.shape[0]} vector embeddings.")
-
-        # Save the chunks and their embeddings
-        with open(os.path.join(index_dir, 'chunks.json'), 'w', encoding='utf-8') as f:
-            json.dump(all_chunks, f)
-        np.save(os.path.join(index_dir, 'embeddings.npy'), embeddings)
-        print(f"Vector index saved successfully to '{index_dir}'")
+        
+        # Add the new documents, their metadata, and their IDs to the collection.
+        # ChromaDB will automatically handle the embedding process using the configured model.
+        collection.add(
+            documents=new_chunks,
+            metadatas=new_metadatas,
+            ids=new_ids
+        )
+        print(f"Successfully added {len(new_chunks)} new chunks to the ChromaDB index.")
 
     except Exception as e:
         print(f"Error creating embeddings or saving index: {e}", file=sys.stderr)
@@ -391,44 +413,57 @@ def retrieve_relevant_context(scenario: str, index_dir: str, api_key: str, top_k
     Implements the 'Retrieve' step of RAG. It takes a user scenario, finds the
     most relevant text chunks from the vector index, and returns them.
     """
-    chunks_path = os.path.join(index_dir, 'chunks.json')
-    embeddings_path = os.path.join(index_dir, 'embeddings.npy')
-
-    if not (os.path.exists(chunks_path) and os.path.exists(embeddings_path)):
-        print("Warning: Vector index not found. Run with --update-index first. Continuing without context.")
+    # Check if the ChromaDB index directory exists and is not empty.
+    if not os.path.exists(index_dir) or not os.listdir(index_dir):
+        print("Warning: Vector index is empty or does not exist. Continuing without context.")
         return ""
 
     print("Retrieving relevant context from vector index...")
     try:
-        # Load the pre-computed index
-        with open(chunks_path, 'r', encoding='utf-8') as f:
-            all_chunks = json.load(f)
-        doc_embeddings = np.load(embeddings_path)
+        # Initialize the ChromaDB client
+        client = chromadb.PersistentClient(path=index_dir)
 
-        # Create an embedding for the user's scenario (the query)
+        # Check if the collection exists before trying to query it.
+        # This prevents an error if the KB has been cleared.
+        collections = client.list_collections()
+        if not any(c.name == "maximo_docs" for c in collections):
+            print("Warning: 'maximo_docs' collection not found in the index. Continuing without context.")
+            return ""
+
+        # Now it's safe to get the collection and configure the API for the query
+        collection = client.get_collection(name="maximo_docs")
         genai.configure(api_key=api_key)
-        query_embedding = genai.embed_content(model='models/embedding-001',
-                                              content=scenario,
-                                              task_type="RETRIEVAL_QUERY")['embedding']
 
-        # Find the most similar documents using cosine similarity
-        query_embedding = np.array(query_embedding)
-        similarities = np.dot(doc_embeddings, query_embedding) / (np.linalg.norm(doc_embeddings, axis=1) * np.linalg.norm(query_embedding))
+        # Query the collection to find the most relevant documents
+        results = collection.query(
+            query_texts=[scenario],
+            n_results=top_k
+        )
 
-        # Get the indices of the top_k most similar chunks
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        # Format the results into a context string
+        relevant_chunks = []
+        documents = results.get('documents', [[]])[0]
+        metadatas = results.get('metadatas', [[]])[0]
+        distances = results.get('distances', [[]])[0]
 
         # --- Add a relevance threshold to filter out irrelevant results ---
-        # This prevents documents that are only vaguely related from "polluting" the context.
-        relevance_threshold = 0.65 # Tuned to be slightly more permissive.
-        relevant_chunks = []
-        for i in top_indices:
-            if similarities[i] >= relevance_threshold:
-                print(f"  - Found relevant chunk from '{all_chunks[i]['source']}' (Similarity: {similarities[i]:.2f})")
-                relevant_chunks.append(f"--- Context from {all_chunks[i]['source']} ---\n{all_chunks[i]['text']}")
+        # With cosine distance, distance = 1 - similarity. A smaller distance is better.
+        # We set a threshold to filter out results that are not sufficiently similar.
+        # A distance of 0.40 corresponds to a similarity of 0.60. This is slightly
+        # more lenient to catch documents that are topically relevant but not perfectly phrased.
+        distance_threshold = 0.40
+        print(f"--> Using relevance similarity threshold: {1-distance_threshold:.2f} (distance <= {distance_threshold})")
+
+        for i, doc in enumerate(documents):
+            distance = distances[i]
+            similarity = 1 - distance
+            source = metadatas[i].get('source', 'Unknown source')
+            
+            if distance <= distance_threshold:
+                print(f"  - Found relevant chunk from '{source}' (Similarity: {similarity:.2f})")
+                relevant_chunks.append(f"--- Context from {source} ---\n{doc}")
             else:
-                # Since the list is sorted by similarity, a score below the threshold means the rest are also irrelevant.
-                print(f"  - Discarding chunk from '{all_chunks[i]['source']}' (Similarity: {similarities[i]:.2f} < {relevance_threshold})")
+                print(f"  - Discarding chunk from '{source}' (Similarity: {similarity:.2f} is below threshold of {1-distance_threshold:.2f})")
 
         if not relevant_chunks:
             print("  - No documents met the relevance threshold. Proceeding without custom context.")
@@ -491,7 +526,7 @@ When creating the 'Test Steps' table, you MUST follow the exact column structure
 def main():
     """
     Main function to parse arguments, generate the test case, and save it.
-    """
+   """
     parser = argparse.ArgumentParser(
         description="Generate an IBM Maximo test case in Markdown format using the Gemini API.",
         formatter_class=argparse.RawTextHelpFormatter
