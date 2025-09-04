@@ -1,105 +1,132 @@
 {% extends "base.html" %}
 
-{% block title %}Knowledge Base - Maximo Assistant{% endblock %}
+{% block title %}Knowledge Base Management{% endblock %}
 
 {% block content %}
 <style>
-    .drop-zone {
-        border: 2px dashed var(--border-color);
-        border-radius: 8px;
-        padding: 3rem;
-        text-align: center;
-        cursor: pointer;
-        transition: background-color 0.2s, border-color 0.2s;
+    .container { max-width: 800px; }
+    .card { box-shadow: var(--shadow); }
+    .spinner-border {
+        width: 1.5rem;
+        height: 1.5rem;
+        vertical-align: text-bottom;
     }
-    .drop-zone:hover, .drop-zone.dragover {
-        background-color: #e9ecef;
-        border-color: var(--primary-color);
-    }
-    .drop-zone-text { color: #6c757d; font-weight: 500; }
-    #kb_file { display: none; }
 </style>
 
-<h1>Knowledge Base Management</h1>
-<p>Upload a .pdf, .docx, or .txt file to add it to the knowledge base. The AI's knowledge index will be updated automatically.</p>
+<div class="container mt-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Knowledge Base Management</h1>
+        <a href="/" class="btn btn-outline-secondary">Back to Home</a>
+    </div>
 
-<div id="messages"></div>
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Upload New Document</h5>
+            <p class="card-text text-muted">
+                Upload a new document (.pdf, .docx, .txt) to the agent's knowledge base.
+                The system will read the document, convert it into vectors, and add it to the index.
+                This process may take a moment.
+            </p>
 
-<div class="section">
-    <form id="kb-form">
-        <label for="kb_file" class="drop-zone">
-            <span class="drop-zone-text">Drag & drop a file here, or click to select</span>
-            <input type="file" id="kb_file" name="kb_file" accept=".pdf,.docx,.txt">
-        </label>
-        <div style="text-align: right; margin-top: 1rem;">
-            <button type="submit">Upload & Update Index</button>
+            <form id="kb-upload-form">
+                <div class="mb-3">
+                    <label for="kb_file" class="form-label">Select Document</label>
+                    <input class="form-control" type="file" id="kb_file" name="kb_file" required>
+                </div>
+                <div class="mb-3">
+                    <label for="google_api_key" class="form-label">Google API Key</label>
+                    <input type="password" class="form-control" id="google_api_key" name="google_api_key" placeholder="Required for vector conversion" required>
+                </div>
+                <button type="submit" id="upload-btn" class="btn btn-primary">Upload and Update Index</button>
+            </form>
+            <div id="upload-status" class="mt-3"></div>
         </div>
-    </form>
+    </div>
+
+    <div class="card mt-4">
+        <div class="card-body">
+            <h5 class="card-title">Manage Knowledge Base</h5>
+            <p class="card-text text-muted">
+                Permanently delete all documents and clear the entire vector index. This action cannot be undone.
+                Use this if you want to completely reset the agent's knowledge.
+            </p>
+            <button id="clear-kb-btn" class="btn btn-danger">Clear Entire Knowledge Base</button>
+            <div id="clear-status" class="mt-3"></div>
+        </div>
+    </div>
 </div>
 
-<div id="spinner" class="spinner"></div>
-
 <script>
-    const spinner = document.getElementById('spinner');
-    const messagesDiv = document.getElementById('messages');
-    const dropZone = document.querySelector('.drop-zone');
-    const dropZoneText = document.querySelector('.drop-zone-text');
-    const fileInput = document.getElementById('kb_file');
+    const kbForm = document.getElementById('kb-upload-form');
+    const uploadBtn = document.getElementById('upload-btn');
+    const uploadStatus = document.getElementById('upload-status');
+    const clearKbBtn = document.getElementById('clear-kb-btn');
+    const clearStatus = document.getElementById('clear-status');
 
-    function showMessage(text, type = 'message') {
-        messagesDiv.innerHTML = `<div class="alert alert-${type}" role="alert">${text}</div>`;
-        setTimeout(() => messagesDiv.innerHTML = '', 5000);
-    }
-
-    dropZone.addEventListener('click', () => fileInput.click());
-    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-        });
-    });
-    ['dragenter', 'dragover'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'));
-    });
-    ['dragleave', 'drop'].forEach(eventName => {
-        dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'));
-    });
-    dropZone.addEventListener('drop', (e) => {
-        fileInput.files = e.dataTransfer.files;
-        updateDropZoneText();
-    });
-    fileInput.addEventListener('change', updateDropZoneText);
-
-    function updateDropZoneText() {
-        if (fileInput.files.length > 0) {
-            dropZoneText.textContent = fileInput.files[0].name;
-        } else {
-            dropZoneText.textContent = "Drag & drop a file here, or click to select";
-        }
-    }
-
-    document.getElementById('kb-form').addEventListener('submit', async (e) => {
+    kbForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const formData = new FormData(e.target);
-        if (!formData.get('kb_file').name) {
-            showMessage('Please select a file to upload.', 'error');
+
+        const formData = new FormData(kbForm);
+        if (!formData.get('kb_file') || !formData.get('google_api_key')) {
+            uploadStatus.innerHTML = `<div class="alert alert-danger">Please select a file and provide an API key.</div>`;
             return;
         }
-        spinner.style.display = 'block';
+
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = `
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            Processing...
+        `;
+        uploadStatus.innerHTML = `<div class="alert alert-info">Uploading and processing file. This may take a moment...</div>`;
+
         try {
-            const response = await fetch('/update_kb', { method: 'POST', body: formData });
+            const response = await fetch('/update_kb', {
+                method: 'POST',
+                body: formData
+            });
+
             const result = await response.json();
+
             if (response.ok) {
-                showMessage(result.message);
+                uploadStatus.innerHTML = `<div class="alert alert-success">${result.message}</div>`;
             } else {
-                showMessage(result.error, 'error');
+                uploadStatus.innerHTML = `<div class="alert alert-danger">Error: ${result.error}</div>`;
             }
         } catch (error) {
-            showMessage('A network error occurred.', 'error');
+            uploadStatus.innerHTML = `<div class="alert alert-danger">A network error occurred: ${error.message}</div>`;
         } finally {
-            spinner.style.display = 'none';
-            e.target.reset();
-            updateDropZoneText();
+            uploadBtn.disabled = false;
+            uploadBtn.innerHTML = 'Upload and Update Index';
+            kbForm.reset();
+        }
+    });
+
+    clearKbBtn.addEventListener('click', async () => {
+        if (!confirm('Are you sure you want to permanently delete the entire knowledge base? This cannot be undone.')) {
+            return;
+        }
+
+        clearKbBtn.disabled = true;
+        clearKbBtn.innerHTML = 'Clearing...';
+        clearStatus.innerHTML = `<div class="alert alert-warning">Deleting all indexed data...</div>`;
+
+        try {
+            const response = await fetch('/clear_kb', {
+                method: 'POST',
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                clearStatus.innerHTML = `<div class="alert alert-success">${result.message}</div>`;
+            } else {
+                clearStatus.innerHTML = `<div class="alert alert-danger">Error: ${result.error}</div>`;
+            }
+        } catch (error) {
+            clearStatus.innerHTML = `<div class="alert alert-danger">A network error occurred: ${error.message}</div>`;
+        } finally {
+            clearKbBtn.disabled = false;
+            clearKbBtn.innerHTML = 'Clear Entire Knowledge Base';
         }
     });
 </script>
