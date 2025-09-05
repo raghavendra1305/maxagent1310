@@ -772,7 +772,6 @@ class MaximoAPIClient:
         """
         return self.update_asset(assetnum, {"status": new_status}, siteid)
     
-    
     def _get_record_href(self, object_structure, where_clause):
         """Helper function to get a record's unique URL (href) for updates."""
         url = f"{self.api_url}/{object_structure}"
@@ -783,333 +782,340 @@ class MaximoAPIClient:
                 data = response.json()
                 if data.get('member') and data['member']:
                     return data['member'][0].get('href')
+                # Also check for OSLC response format
+                elif data.get('rdfs:member') and data['rdfs:member']:
+                    member = data['rdfs:member'][0]
+                    return member.get('rdf:about') or member.get('href')
         except requests.exceptions.RequestException:
             return None  # The calling function will handle the error message.
         return None
-    def create_asset(self, siteid, asset_data):
-            print("  Trying alternative method...")
-        
-    # If OSLC creation failed, try REST API
+######################################
     def create_asset(self, siteid, asset_data):
         """
-    Create a new asset in Maximo with automatic asset number generation.
+    Creates a new asset in Maximo with auto-generated asset number.
+    Uses the same pattern as the successful update method.
     
     Args:
-        siteid (str): The site ID (mandatory for asset creation)
-        asset_data (dict or str): Data for the new asset - description, location, etc.
+        siteid (str): The site ID for the asset (required)
+        asset_data (str or dict): JSON string or dictionary with asset data
         
     Returns:
-        dict: The newly created asset data including the generated asset number
+        dict: The created asset data with auto-generated asset number
     """
-        print(f"\n➕ Creating new asset in site {siteid}...")
+        print(f"\n➕ Creating new asset at site {siteid}")
+        
+        # Check if siteid is provided (required)
+        if not siteid:
+            print("❌ Site ID is required for asset creation")
+            return None
         
         # Parse asset_data if it's a string
         if isinstance(asset_data, str):
             try:
-                asset_fields = json.loads(asset_data)
+                create_fields = json.loads(asset_data)
             except json.JSONDecodeError:
                 print(f"❌ Invalid JSON in asset_data: {asset_data}")
                 return None
         else:
-            asset_fields = asset_data
+            create_fields = asset_data
             
-        print(f"  Asset fields: {json.dumps(asset_fields)}")
+        print(f"  Asset data: {json.dumps(create_fields)}")
         
-        # Validate siteid is provided (required)
-        if not siteid:
-            print("❌ Site ID is required for asset creation")
-            return None
+        # Try different creation methods
+        success = False
+        created_assetnum = None
+        response_data = None
+        
+        # Method 1: Try OSLC with proper headers (similar to update method)
+        try:
+            print(f"\n  Method 1: OSLC API with proper headers...")
             
-        # Try different create methods
-        create_methods = [
-            self._create_asset_oslc,
-            self._create_asset_rest,
-            self._create_asset_object_structure
-        ]
-        
-        for method in create_methods:
-            try:
-                result = method(siteid, asset_fields)
-                if result:
-                    # Get the newly created asset with all its details
-                    assetnum = result.get('assetnum')
-                    if assetnum:
-                        print(f"✅ Successfully created asset {assetnum}")
-                        # Get complete asset details
-                        complete_asset = self.get_asset(assetnum, siteid)
-                        if complete_asset:
-                            return complete_asset
-                        else:
-                            # Return what we have if we can't get complete details
-                            return result
-                    else:
-                        return result
-            except Exception as e:
-                print(f"  Create method {method.__name__} failed: {str(e)}")
-                print("  Trying next method...")
-        
-        # If all methods fail
-                print("❌ All create methods failed")
-                return None
-
-    def _create_asset_oslc(self, siteid, asset_fields):
-        """Create asset using OSLC API"""
-        # Look for OSLC endpoints
-        oslc_endpoints = {k: v for k, v in self.working_endpoints.items() if "oslc" in k}
-        if not oslc_endpoints:
-            return None
+            # Use the OSLC endpoint
+            oslc_url = f"{self.oslc_url}/mxasset"
             
-        # Choose an OSLC endpoint
-        endpoint_name = next(iter(oslc_endpoints.keys()))
-        endpoint_info = oslc_endpoints[endpoint_name]
-        
-        # Get the base URL
-        base_url_parts = endpoint_info["url"].split("/os/")
-        if len(base_url_parts) < 2:
-            print("  Invalid OSLC endpoint URL format")
-            return None
+            # Prepare payload with spi: prefixes for all fields including siteid
+            oslc_payload = {
+                "spi:siteid": siteid,
+                "spi:assetnum": "*",  # Let Maximo generate it
+            }
             
-        # Construct collection URL
-        collection_url = f"{base_url_parts[0]}/os/mxasset"
-        
-        print(f"  Attempting OSLC creation at: {collection_url}")
-        
-        # Auth headers from the endpoint
-        auth_headers = endpoint_info["auth_headers"]
-        
-        # Prepare OSLC payload with namespace prefixes
-        oslc_payload = {
-            "spi:siteid": siteid,
-        }
-        
-        # Add asset fields with spi: namespace
-        for key, value in asset_fields.items():
-            if key != "siteid":  # Skip siteid as we already added it
-                if key.startswith("spi:"):
-                    oslc_payload[key] = value
-                else:
+            # Add other fields with spi: prefix
+            for key, value in create_fields.items():
+                if key.lower() != "siteid":
                     oslc_payload[f"spi:{key}"] = value
-        
-        # Headers for creation
-        create_headers = {
-            **auth_headers,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Properties": "siteid," + ",".join(k.replace("spi:", "") for k in oslc_payload 
-                                if k != "spi:siteid" and k != "spi:assetnum")
-        }
-        
-        response = requests.post(
-            collection_url,
-            headers=create_headers,
-            json=oslc_payload,
-            verify=False,
-            timeout=60
-        )
-        
-        if response.status_code in [200, 201]:
-            print(f"✅ OSLC creation successful: Status {response.status_code}")
-            try:
-                # Parse response to get the new asset details
-                result = response.json()
-                
-                # Extract assetnum from various possible response formats
-                assetnum = None
-                if "rdf:about" in result:
-                    # Try to extract assetnum from the resource URI
-                    uri = result["rdf:about"]
-                    if "assetnum=" in uri:
-                        assetnum = uri.split("assetnum=")[1].split("&")[0].strip('"')
-                    else:
-                        # Try to get it from the fields
-                        assetnum = result.get("spi:assetnum")
-                else:
-                    # Look for assetnum field with various possible names
-                    assetnum = result.get("spi:assetnum") or result.get("assetnum")
-                
-                if assetnum:
-                    # Return a simple result with at least the asset number
-                    return {"assetnum": assetnum, "siteid": siteid}
-                else:
-                    # Just return the raw response if we can't find assetnum
-                    return result
-            except Exception as e:
-                print(f"  Error parsing OSLC response: {str(e)}")
-                return {"success": True, "message": "Asset created but couldn't parse details"}
-        else:
-            print(f"❌ OSLC creation failed: Status {response.status_code}")
-            if response.text:
-                print(f"  Response: {response.text[:500]}")
-            return None
-
-    def _create_asset_rest(self, siteid, asset_fields):
-        """Create asset using REST API"""
-        # Look for REST endpoints
-        rest_endpoints = {k: v for k, v in self.working_endpoints.items() if "rest" in k or "api" in k}
-        if not rest_endpoints:
-            return None
             
-        # Choose a REST endpoint
-        endpoint_name = next(iter(rest_endpoints.keys()))
-        endpoint_info = rest_endpoints[endpoint_name]
-        
-        # Get the base URL
-        base_url_parts = endpoint_info["url"].split("/os/")
-        if len(base_url_parts) < 2:
-            # Try another pattern
-            base_url_parts = endpoint_info["url"].split("/mbo/")
-            if len(base_url_parts) < 2:
-                print("  Invalid REST endpoint URL format")
-                return None
-                
-            # Construct API URL
-            if "mbo" in endpoint_info["url"]:
-                api_url = f"{base_url_parts[0]}/api/os/mxasset"
+            # Headers similar to update method
+            create_headers = {
+                **self.json_headers,
+                "x-method-override": "POST",
+                "Properties": "*"  # All properties
+            }
+            
+            print(f"  URL: {oslc_url}")
+            print(f"  Payload: {json.dumps(oslc_payload)}")
+            
+            response = requests.post(
+                oslc_url,
+                headers=create_headers,
+                json=oslc_payload,
+                verify=False,
+                timeout=60
+            )
+            
+            if response.status_code in [200, 201]:
+                print(f"✅ OSLC creation successful: Status {response.status_code}")
+                response_data = response.json()
+                success = True
             else:
-                api_url = f"{base_url_parts[0]}/api/os/mxasset"
-        else:
-            api_url = f"{base_url_parts[0]}/api/os/mxasset"
+                print(f"  OSLC creation failed: Status {response.status_code}")
+                if response.text:
+                    print(f"  Response: {response.text[:300]}")
+        except Exception as e:
+            print(f"  Method 1 error: {str(e)}")
         
-        print(f"  Attempting REST creation at: {api_url}")
-        
-        # Auth headers from the endpoint
-        auth_headers = endpoint_info["auth_headers"]
-        
-        # Prepare REST payload
-        rest_payload = {
-            "ASSET": [{
-                "SITEID": siteid
-            }]
-        }
-        
-        # Add asset fields with uppercase
-        for key, value in asset_fields.items():
-            if key.lower() != "siteid":  # Skip siteid as we already added it
-                rest_payload["ASSET"][0][key.upper()] = value
-        
-        # Headers for REST
-        rest_headers = {
-            **auth_headers,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-        
-        # Add action parameter for some Maximo versions
-        params = {
-            "_action": "Create"
-        }
-        
-        response = requests.post(
-            api_url,
-            headers=rest_headers,
-            params=params,
-            json=rest_payload,
-            verify=False,
-            timeout=60
-        )
-        
-        if response.status_code in [200, 201]:
-            print(f"✅ REST creation successful: Status {response.status_code}")
+        # Method 2: REST API with _action parameter (similar to update)
+        if not success:
             try:
-                result = response.json()
+                print(f"\n  Method 2: REST API with _action parameter...")
                 
-                # Try to find assetnum in the response
-                assetnum = None
-                if "ASSET" in result and isinstance(result["ASSET"], list) and len(result["ASSET"]) > 0:
-                    assetnum = result["ASSET"][0].get("ASSETNUM")
-                elif "member" in result and isinstance(result["member"], list) and len(result["member"]) > 0:
-                    assetnum = result["member"][0].get("assetnum")
-                elif "assetnum" in result:
-                    assetnum = result.get("assetnum")
-                elif "ASSETNUM" in result:
-                    assetnum = result.get("ASSETNUM")
+                # Prepare payload like update method
+                rest_payload = {
+                    "ASSET": [{
+                        "SITEID": siteid,
+                        "ASSETNUM": "*"  # Auto-generate
+                    }]
+                }
                 
-                if assetnum:
-                    # Return a simple result with at least the asset number
-                    return {"assetnum": assetnum, "siteid": siteid}
-                else:
-                    # Just return the raw response if we can't find assetnum
-                    return result
+                # Add other fields in uppercase
+                for key, value in create_fields.items():
+                    if key.lower() != "siteid":
+                        rest_payload["ASSET"][0][key.upper()] = value
+                
+                # Try with different action parameters
+                for action in ["Add", "Create", "AddChange"]:
+                    params = {
+                        "_action": action,
+                        "lean": 1
+                    }
+                    
+                    print(f"  Trying _action={action}")
+                    print(f"  URL: {self.api_url}/mxasset")
+                    print(f"  Payload: {json.dumps(rest_payload)}")
+                    
+                    response = requests.post(
+                        f"{self.api_url}/mxasset",
+                        headers=self.json_headers,
+                        params=params,
+                        json=rest_payload,
+                        verify=False,
+                        timeout=60
+                    )
+                    
+                    if response.status_code in [200, 201]:
+                        print(f"✅ REST API creation with _action={action} successful: Status {response.status_code}")
+                        response_data = response.json()
+                        success = True
+                        break
+                    else:
+                        print(f"    Action {action} failed: Status {response.status_code}")
+                        if response.text and response.status_code != 400:
+                            print(f"    Response: {response.text[:200]}")
             except Exception as e:
-                print(f"  Error parsing REST response: {str(e)}")
-                return {"success": True, "message": "Asset created but couldn't parse details"}
-        else:
-            print(f"❌ REST creation failed: Status {response.status_code}")
-            if response.text:
-                print(f"  Response: {response.text[:500]}")
-            return None
-
-    def _create_asset_object_structure(self, siteid, asset_fields):
-        """Create asset using object structure API"""
-        # Try to construct object structure URL from working endpoints
-        os_url = None
+                print(f"  Method 2 error: {str(e)}")
         
-        for name, info in self.working_endpoints.items():
-            base_url = info["url"].split("/os/")[0] if "/os/" in info["url"] else None
-            if base_url:
-                os_url = f"{base_url}/rest/os/ASSET"
-                break
-                
-        if not os_url:
-            for base_url in self.base_urls:
-                os_url = f"{base_url}/rest/os/ASSET"
-                break
-        
-        if not os_url:
-            return None
-            
-        print(f"  Attempting object structure creation at: {os_url}")
-        
-        # Try each auth method
-        for auth_name, auth_headers in self.auth_methods.items():
+        # Method 3: Direct POST without bulk wrapper
+        if not success:
             try:
-                # Prepare object structure payload
-                os_payload = {
-                    "SITEID": siteid
+                print(f"\n  Method 3: Direct POST without wrapper...")
+                
+                # Simple payload structure
+                direct_payload = {
+                    "siteid": siteid,
+                    "assetnum": "*"
                 }
                 
-                # Add asset fields with uppercase
-                for key, value in asset_fields.items():
-                    if key.lower() != "siteid":  # Skip siteid as we already added it
-                        os_payload[key.upper()] = value
+                # Add other fields
+                for key, value in create_fields.items():
+                    if key.lower() != "siteid":
+                        direct_payload[key.lower()] = value
                 
-                # Headers for REST
-                os_headers = {
-                    **auth_headers,
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                }
+                print(f"  URL: {self.api_url}/mxasset")
+                print(f"  Payload: {json.dumps(direct_payload)}")
                 
                 response = requests.post(
-                    os_url,
-                    headers=os_headers,
-                    json=os_payload,
+                    f"{self.api_url}/mxasset",
+                    headers=self.json_headers,
+                    json=direct_payload,
                     verify=False,
                     timeout=60
                 )
                 
                 if response.status_code in [200, 201]:
-                    print(f"✅ Object structure creation successful: Status {response.status_code}")
-                    try:
-                        result = response.json()
-                        
-                        # Try to find assetnum in the response
-                        assetnum = result.get("ASSETNUM") or result.get("assetnum")
-                        
-                        if assetnum:
-                            # Return a simple result with at least the asset number
-                            return {"assetnum": assetnum, "siteid": siteid}
-                        else:
-                            # Just return the raw response if we can't find assetnum
-                            return result
-                    except Exception as e:
-                        print(f"  Error parsing object structure response: {str(e)}")
-                        return {"success": True, "message": "Asset created but couldn't parse details"}
+                    print(f"✅ Direct POST successful: Status {response.status_code}")
+                    response_data = response.json()
+                    success = True
                 else:
-                    print(f"❌ Object structure creation with {auth_name} failed: Status {response.status_code}")
-                    if response.text:
-                        print(f"  Response: {response.text[:200]}")
+                    print(f"  Direct POST failed: Status {response.status_code}")
             except Exception as e:
-                print(f"  Error with object structure creation using {auth_name}: {str(e)}")
+                print(f"  Method 3 error: {str(e)}")
+        
+        # Method 4: Integration endpoint
+        if not success:
+            try:
+                print(f"\n  Method 4: Integration endpoint...")
                 
-        return None
+                # Try the integration framework endpoint
+                integration_url = f"{self.base_url}/oslc/script/CREATE"
+                
+                integration_payload = {
+                    "siteid": siteid
+                }
+                
+                # Add fields
+                for key, value in create_fields.items():
+                    if key.lower() != "siteid":
+                        integration_payload[key.lower()] = value
+                
+                # Parameters for object structure
+                params = {
+                    "oslc.properties": "*",
+                    "_format": "json",
+                    "action": "CREATE",
+                    "objectname": "ASSET"
+                }
+                
+                print(f"  URL: {integration_url}")
+                print(f"  Params: {params}")
+                print(f"  Payload: {json.dumps(integration_payload)}")
+                
+                response = requests.post(
+                    integration_url,
+                    headers=self.json_headers,
+                    params=params,
+                    json=integration_payload,
+                    verify=False,
+                    timeout=60
+                )
+                
+                if response.status_code in [200, 201]:
+                    print(f"✅ Integration endpoint successful: Status {response.status_code}")
+                    response_data = response.json()
+                    success = True
+                else:
+                    print(f"  Integration endpoint failed: Status {response.status_code}")
+            except Exception as e:
+                print(f"  Method 4 error: {str(e)}")
+        
+        # Parse response to get asset number
+        if success and response_data:
+            try:
+                # Try different response formats
+                if isinstance(response_data, dict):
+                    # Direct response
+                    created_assetnum = response_data.get("assetnum") or response_data.get("ASSETNUM")
+                    
+                    # OSLC response with spi: prefix
+                    if not created_assetnum:
+                        created_assetnum = response_data.get("spi:assetnum")
+                    
+                    # Wrapped in member array
+                    if not created_assetnum and "member" in response_data:
+                        if response_data["member"] and len(response_data["member"]) > 0:
+                            member = response_data["member"][0]
+                            created_assetnum = member.get("assetnum") or member.get("ASSETNUM")
+                    
+                    # Wrapped in ASSET array
+                    if not created_assetnum and "ASSET" in response_data:
+                        if response_data["ASSET"] and len(response_data["ASSET"]) > 0:
+                            asset = response_data["ASSET"][0]
+                            created_assetnum = asset.get("ASSETNUM") or asset.get("assetnum")
+                    
+                    # From resource URI
+                    if not created_assetnum and "rdf:about" in response_data:
+                        uri = response_data["rdf:about"]
+                        # Extract from patterns like _MTMxNTAvQkVERk9SRA--
+                        if "_" in uri:
+                            try:
+                                encoded = uri.split("_")[-1].split("/")[0].replace("--", "")
+                                decoded = base64.b64decode(encoded + "==").decode('utf-8')
+                                parts = decoded.split("/")
+                                if parts[0].isdigit():
+                                    created_assetnum = parts[0]
+                            except:
+                                pass
+                
+                if created_assetnum:
+                    print(f"✅ Asset created with number: {created_assetnum}")
+            except Exception as e:
+                print(f"  Error parsing response: {str(e)}")
+        
+        # If successful but no asset number, try to find it
+        if success and not created_assetnum:
+            try:
+                print("\n  Searching for newly created asset...")
+                time.sleep(3)
+                
+                # Build search criteria
+                search_where = f'siteid="{siteid}"'
+                if "description" in create_fields:
+                    search_where += f' and description="{create_fields["description"]}"'
+                
+                search_params = {
+                    "oslc.where": search_where,
+                    "oslc.select": "assetnum,siteid,description,changedate",
+                    "oslc.orderBy": "-assetid",  # Newest first by ID
+                    "oslc.pageSize": "1",
+                    "_format": "json"
+                }
+                
+                response = requests.get(
+                    f"{self.api_url}/mxasset",
+                    headers=self.headers,
+                    params=search_params,
+                    verify=False,
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if "member" in data and data["member"] and len(data["member"]) > 0:
+                        created_assetnum = data["member"][0].get("assetnum")
+                        if created_assetnum:
+                            print(f"✅ Found newly created asset: {created_assetnum}")
+            except Exception as e:
+                print(f"  Error searching for asset: {str(e)}")
+        
+        # Return results
+        if not success:
+            print("\n❌ All creation methods failed")
+            print("💡 Troubleshooting tips:")
+            print("  1. Verify the site ID exists and is active")
+            print("  2. Check user permissions for asset creation")
+            print("  3. Check if there are required fields configured in Maximo")
+            print("  4. Check workflow or automation script restrictions")
+            return None
+        
+        # Build return data
+        result = {
+            "status": "success",
+            "siteid": siteid,
+            **create_fields
+        }
+        
+        if created_assetnum:
+            result["assetnum"] = created_assetnum
+            result["message"] = f"Asset {created_assetnum} created successfully"
+            
+            # Try to get full details
+            try:
+                time.sleep(1)
+                full_assets = self.get_asset(created_assetnum, siteid)
+                if full_assets and len(full_assets) > 0:
+                    return full_assets[0]
+            except:
+                pass
+        else:
+            result["message"] = "Asset created but couldn't determine asset number"
+            result["status"] = "partial_success"
+        
+        return result
