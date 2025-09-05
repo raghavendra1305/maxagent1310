@@ -1122,7 +1122,181 @@ class MaximoAPIClient:
         return result
    
 
-# Add this method to your MaximoAPIClient class:
+# Add these methods to your MaximoAPIClient class:
+
+def list_assets(self, search_criteria=None, fields_to_select=None, max_results=100):
+    """
+    Lists assets based on search criteria.
+    
+    Args:
+        search_criteria (str or dict): Search conditions like {"status": "ACTIVE"} or OSLC where clause
+        fields_to_select (str): Comma-separated list of fields to return
+        max_results (int): Maximum number of results to return (default 100)
+        
+    Returns:
+        list: List of assets matching the criteria
+    """
+    print(f"\n📋 Listing assets with criteria: {search_criteria}")
+    
+    # Build the where clause
+    where_clause = ""
+    
+    if search_criteria:
+        if isinstance(search_criteria, str):
+            # Direct OSLC where clause provided
+            where_clause = search_criteria
+        elif isinstance(search_criteria, dict):
+            # Build where clause from dictionary
+            conditions = []
+            for field, value in search_criteria.items():
+                # Handle different field types
+                if isinstance(value, str):
+                    # Check if it's a wildcard search
+                    if '*' in value:
+                        conditions.append(f'{field} like "{value.replace("*", "%")}"')
+                    else:
+                        conditions.append(f'{field}="{value}"')
+                elif isinstance(value, (int, float)):
+                    conditions.append(f'{field}={value}')
+                elif isinstance(value, bool):
+                    conditions.append(f'{field}={str(value).lower()}')
+                elif isinstance(value, list):
+                    # Handle IN clause
+                    values_str = ','.join([f'"{v}"' if isinstance(v, str) else str(v) for v in value])
+                    conditions.append(f'{field} in [{values_str}]')
+                elif value is None:
+                    conditions.append(f'{field} is null')
+            
+            where_clause = ' and '.join(conditions)
+    
+    # Default fields if none specified
+    if not fields_to_select:
+        fields_to_select = "assetnum,siteid,description,status,location,assettype"
+    
+    print(f"  Where clause: {where_clause}")
+    print(f"  Fields: {fields_to_select}")
+    print(f"  Max results: {max_results}")
+    
+    # Try OSLC API first
+    try:
+        params = {
+            "oslc.select": "*",  # Get all fields for proper filtering
+            "oslc.pageSize": str(max_results),
+            "_format": "json",
+            "_ts": int(time.time())
+        }
+        
+        # Add where clause if provided
+        if where_clause:
+            # Add spi: prefix for OSLC
+            oslc_where = where_clause
+            # Replace field names with spi: prefix if not already present
+            for field in ['status', 'siteid', 'description', 'location', 'assettype', 'assetnum']:
+                if field in oslc_where and f'spi:{field}' not in oslc_where:
+                    oslc_where = oslc_where.replace(field, f'spi:{field}')
+            params["oslc.where"] = oslc_where
+        
+        oslc_url = f"{self.oslc_url}/mxasset"
+        print(f"\n  Trying OSLC API...")
+        print(f"  URL: {oslc_url}")
+        
+        response = requests.get(
+            oslc_url,
+            headers=self.headers,
+            params=params,
+            verify=False,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Handle response
+            members = None
+            if "member" in data:
+                members = data["member"]
+            elif "rdfs:member" in data:
+                members = data["rdfs:member"]
+            
+            if members:
+                print(f"✅ Found {len(members)} assets via OSLC API")
+                
+                # Clean up the response
+                clean_assets = []
+                fields_list = fields_to_select.split(',')
+                
+                for asset in members:
+                    clean_asset = {}
+                    
+                    # Extract requested fields
+                    for field in fields_list:
+                        field = field.strip()
+                        
+                        # Check both prefixed and non-prefixed
+                        if field in asset:
+                            clean_asset[field] = asset[field]
+                        elif f"spi:{field}" in asset:
+                            clean_asset[field] = asset[f"spi:{field}"]
+                        # Case insensitive check
+                        else:
+                            for k in asset.keys():
+                                if k.lower() == field.lower() or k.lower() == f"spi:{field}".lower():
+                                    clean_asset[field] = asset[k]
+                                    break
+                    
+                    clean_assets.append(clean_asset)
+                
+                return clean_assets
+            else:
+                print("  No assets found matching criteria")
+                return []
+                
+    except Exception as e:
+        print(f"  OSLC API error: {str(e)}")
+    
+    # Try REST API as fallback
+    try:
+        params = {
+            "oslc.select": fields_to_select,
+            "oslc.pageSize": str(max_results),
+            "lean": 1,
+            "_format": "json",
+            "_ts": int(time.time())
+        }
+        
+        if where_clause:
+            params["oslc.where"] = where_clause
+        
+        rest_url = f"{self.api_url}/mxasset"
+        print(f"\n  Trying REST API...")
+        print(f"  URL: {rest_url}")
+        
+        response = requests.get(
+            rest_url,
+            headers=self.headers,
+            params=params,
+            verify=False,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if "member" in data and data.get("member"):
+                assets = data["member"]
+                print(f"✅ Found {len(assets)} assets via REST API")
+                return assets
+            else:
+                print("  No assets found matching criteria")
+                return []
+                
+    except Exception as e:
+        print(f"  REST API error: {str(e)}")
+    
+    print("❌ Failed to retrieve asset list")
+    return []
+
+
 def list_assets_table(self, search_criteria=None, fields_to_display=None, max_results=100):
     """
     Lists assets in a table format with any fields you specify.
@@ -1219,4 +1393,3 @@ def list_assets_table(self, search_criteria=None, fields_to_display=None, max_re
         "fields": fields_list,
         "data": assets  # Include raw data if needed
     }
-
