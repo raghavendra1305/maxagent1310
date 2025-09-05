@@ -1,9 +1,7 @@
 import google.generativeai as genai
 import json
 
-# This is the description of the tools that the LLM can use.
-# It's based on the methods in maximo_api_agent.py. This structured format
-# allows the AI to understand what functions are available and what arguments they need.
+# Updated tool definitions to match the MaximoAPIClient methods
 MAXIMO_TOOLS = [
     {
         "name": "get_asset",
@@ -21,7 +19,7 @@ MAXIMO_TOOLS = [
                 },
                 "fields_to_select": {
                     "type": "STRING",
-                    "description": "A comma-separated list of fields to retrieve, e.g., 'description,status,serialnum,installdate'."
+                    "description": "A comma-separated list of fields to retrieve, e.g., 'assetnum,description,status,assettype,location,calnum'."
                 }
             },
             "required": ["assetnum"]
@@ -29,7 +27,7 @@ MAXIMO_TOOLS = [
     },
     {
         "name": "update_asset",
-        "description": "Updates one or more fields for an existing asset in Maximo. Requires the asset number, site ID, and a JSON string of the fields to update.",
+        "description": "Updates one or more fields for an existing asset in Maximo. Can update any field including description, status, location, assettype, etc.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -43,15 +41,77 @@ MAXIMO_TOOLS = [
                 },
                 "fields_to_update": {
                     "type": "STRING",
-                    "description": "A JSON formatted string representing the fields to update. Example: '{\"description\": \"New description\", \"location\": \"NEWLOC\"}'"
+                    "description": "A JSON formatted string representing the fields to update. Example: '{\"description\": \"New description\", \"status\": \"ACTIVE\", \"assettype\": \"BUS\"}'"
                 }
             },
             "required": ["assetnum", "siteid", "fields_to_update"]
         }
     },
     {
+        "name": "create_asset",
+        "description": "Creates a new asset in Maximo. The asset number will be auto-generated. Site ID is mandatory.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "siteid": {
+                    "type": "STRING",
+                    "description": "The site identifier for the new asset. This is required."
+                },
+                "asset_data": {
+                    "type": "STRING",
+                    "description": "A JSON formatted string with asset fields. Example: '{\"description\": \"Pump failure\", \"assettype\": \"BUS\", \"location\": \"LOC123\"}'"
+                }
+            },
+            "required": ["siteid", "asset_data"]
+        }
+    },
+    {
+        "name": "get_location",
+        "description": "Retrieves details for one or more locations from Maximo.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "location": {
+                    "type": "STRING",
+                    "description": "The location ID. For multiple locations, provide a comma-separated list."
+                },
+                "siteid": {
+                    "type": "STRING",
+                    "description": "The site identifier for the location."
+                },
+                "fields_to_select": {
+                    "type": "STRING",
+                    "description": "A comma-separated list of fields to retrieve."
+                }
+            },
+            "required": ["location"]
+        }
+    },
+    {
+        "name": "update_location",
+        "description": "Updates one or more fields for an existing location in Maximo.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "location": {
+                    "type": "STRING",
+                    "description": "The location ID to update."
+                },
+                "siteid": {
+                    "type": "STRING",
+                    "description": "The site identifier for the location."
+                },
+                "fields_to_update": {
+                    "type": "STRING",
+                    "description": "A JSON formatted string representing the fields to update."
+                }
+            },
+            "required": ["location", "fields_to_update"]
+        }
+    },
+    {
         "name": "test_connection",
-        "description": "Tests the connection and authentication to the Maximo server. Does not require any parameters.",
+        "description": "Tests the connection and authentication to the Maximo server.",
         "parameters": {
             "type": "OBJECT",
             "properties": {}
@@ -65,11 +125,21 @@ def get_maximo_tool_call(user_prompt: str, api_key: str):
     """
     try:
         genai.configure(api_key=api_key)
-        # Adding a system instruction gives the model a clearer role and improves reliability.
+        
+        # Enhanced system instruction to better handle various phrasings
         model = genai.GenerativeModel(
             model_name='gemini-1.5-flash-latest',
             tools=MAXIMO_TOOLS,
-            system_instruction="You are a helpful assistant that translates natural language requests into structured API calls for an IBM Maximo system. You must only use the tools provided to you."
+            system_instruction="""You are a helpful assistant that translates natural language requests into structured API calls for an IBM Maximo system. 
+            
+            Important guidelines:
+            1. For asset updates, always use the 'update_asset' tool, not 'update_asset_status'
+            2. When users ask to update multiple fields (like description, status, assettype), combine them into a single fields_to_update JSON string
+            3. For asset creation, always require a siteid and use the 'create_asset' tool
+            4. Field names should be lowercase in JSON (e.g., 'assettype' not 'ASSETTYPE')
+            5. Always identify the correct tool based on the user's intent
+            
+            You must only use the tools provided to you."""
         )
         
         print(f"--> Sending prompt to Gemini for function calling: '{user_prompt}'")
